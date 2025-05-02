@@ -1,0 +1,8 @@
+# Ignorar carpetas del sistema o VS Code
+.vscode/
+Microsoft VS Code/
+*.dll
+*.bin
+*.log
+*.exe
+*.zip
