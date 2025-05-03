@@ -109,7 +109,8 @@ async def main():
     print("✅ Bot corriendo con Flask + Telegram Bot")
     await app_bot.run_polling()
 
-# Ejecutar todo
+# Ejecutar todo (modificado levemente para reiniciar Render)
+
 if __name__ == '__main__':
     from keep_alive import keep_alive
     keep_alive()
