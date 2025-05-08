@@ -1,12 +1,19 @@
 import os
-import asyncio
 import sqlite3
 import nest_asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Token desde variable de entorno
+from keep_alive import keep_alive  # Mantené activo en Render Web Service
+
+# Token desde variables de entorno
 TOKEN = os.environ["TELEGRAM_TOKEN"]
+
+# Activar Flask keep_alive
+keep_alive()
+
+# Activar compatibilidad de bucles en Render
+nest_asyncio.apply()
 
 # Conexión a base de datos
 conn = sqlite3.connect("stock.db", check_same_thread=False)
@@ -19,7 +26,7 @@ CREATE TABLE IF NOT EXISTS stock (
 ''')
 conn.commit()
 
-# Funciones base de datos
+# Funciones
 def obtener_stock(tela):
     cursor.execute("SELECT cantidad FROM stock WHERE tela = ?", (tela,))
     fila = cursor.fetchone()
@@ -36,7 +43,7 @@ def stock_por_tipo(tipo):
     cursor.execute("SELECT tela, cantidad FROM stock WHERE LOWER(tela) LIKE ?", (f"%{tipo.lower()}%",))
     return cursor.fetchall()
 
-# Bot: comandos y botones
+# Bot
 async def tela(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("✍️ Ingresar", callback_data="plantilla_ingreso"),
@@ -96,33 +103,14 @@ async def stock_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje = "⚠️ No se encontró stock relacionado."
     await update.message.reply_text(f"📦 *Stock encontrado:*\n{mensaje}", parse_mode="Markdown")
 
-# Iniciar bot
-async def main():
-    app_bot = ApplicationBuilder().token(TOKEN).build()
-    app_bot.add_handler(CommandHandler("tela", tela))
-    app_bot.add_handler(CallbackQueryHandler(botones_callback))
-    app_bot.add_handler(CommandHandler("ingreso", ingreso))
-    app_bot.add_handler(CommandHandler("consulta", consulta))
-    app_bot.add_handler(CommandHandler("vendido", vendido))
-    app_bot.add_handler(CommandHandler("stock", stock_tipo))
+# Lanzar bot con polling (no cerrar loop manualmente)
+app_bot = ApplicationBuilder().token(TOKEN).build()
+app_bot.add_handler(CommandHandler("tela", tela))
+app_bot.add_handler(CallbackQueryHandler(botones_callback))
+app_bot.add_handler(CommandHandler("ingreso", ingreso))
+app_bot.add_handler(CommandHandler("consulta", consulta))
+app_bot.add_handler(CommandHandler("vendido", vendido))
+app_bot.add_handler(CommandHandler("stock", stock_tipo))
 
-    print("✅ Bot corriendo con Flask + Telegram Bot")
-    await app_bot.run_polling()
-
-# Ejecutar todo (modificado levemente para reiniciar Render)
-
-if __name__ == '__main__':
-    from keep_alive import keep_alive
-    keep_alive()
-
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    import asyncio
-
-    try:
-        asyncio.run(main())
-    except RuntimeError:
-        import uvloop
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        asyncio.run(main())
+print("✅ Bot corriendo desde Render Web Service con polling activo")
+app_bot.run_polling()
