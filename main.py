@@ -1,116 +1,154 @@
 import os
 import sqlite3
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+)
+from keep_alive import keep_alive
 import nest_asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-from keep_alive import keep_alive  # Mantené activo en Render Web Service
-
-# Token desde variables de entorno
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-
-# Activar Flask keep_alive
+# Activar keep_alive para Render Web Service
 keep_alive()
-
-# Activar compatibilidad de bucles en Render
 nest_asyncio.apply()
 
-# Conexión a base de datos
-conn = sqlite3.connect("stock.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS stock (
-    tela TEXT PRIMARY KEY,
-    cantidad INTEGER
-)
-''')
-conn.commit()
+# 📦 BASE DE DATOS
+DB_PATH = "stock_telas.db"
 
-# Funciones
-def obtener_stock(tela):
-    cursor.execute("SELECT cantidad FROM stock WHERE tela = ?", (tela,))
-    fila = cursor.fetchone()
-    return fila[0] if fila else 0
-
-def actualizar_stock(tela, cantidad):
-    actual = obtener_stock(tela)
-    nuevo = max(actual + cantidad, 0)
-    cursor.execute("REPLACE INTO stock (tela, cantidad) VALUES (?, ?)", (tela, nuevo))
+def crear_tabla_si_no_existe():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS telas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL,
+            color TEXT NOT NULL,
+            cantidad INTEGER NOT NULL
+        )
+    """)
     conn.commit()
-    return nuevo
+    conn.close()
 
-def stock_por_tipo(tipo):
-    cursor.execute("SELECT tela, cantidad FROM stock WHERE LOWER(tela) LIKE ?", (f"%{tipo.lower()}%",))
-    return cursor.fetchall()
+crear_tabla_si_no_existe()
 
-# Bot
-async def tela(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = [
-        [InlineKeyboardButton("✍️ Ingresar", callback_data="plantilla_ingreso"),
-         InlineKeyboardButton("🔍 Consultar", callback_data="plantilla_consulta")],
-        [InlineKeyboardButton("💸 Venta", callback_data="plantilla_vendido"),
-         InlineKeyboardButton("📈 Ver Stock", callback_data="plantilla_stock")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Elegí una opción:", reply_markup=reply_markup)
-
-async def botones_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    respuestas = {
-        "plantilla_ingreso": "`/ingreso tela_color cantidad`",
-        "plantilla_consulta": "`/consulta tela_color cantidad`",
-        "plantilla_vendido": "`/vendido tela_color cantidad`",
-        "plantilla_stock": "`/stock tipo`"
-    }
-    await query.edit_message_text(respuestas.get(query.data, "Opción no reconocida."), parse_mode="Markdown")
-
+# 📥 INGRESO DE STOCK
 async def ingreso(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        tela, cantidad = context.args[0], int(context.args[1])
-        nuevo = actualizar_stock(tela, cantidad)
-        await update.message.reply_text(f"✅ Ingresado: +{cantidad} de {tela} (Total: {nuevo})")
-    except:
-        await update.message.reply_text("❌ Formato incorrecto.\nUsá: `/ingreso tela_color cantidad`", parse_mode="Markdown")
+    if len(context.args) != 3:
+        await update.message.reply_text("❌ Tenés que escribir: /ingreso tipo color cantidad")
+        return
+    tipo, color, cantidad = context.args
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT cantidad FROM telas WHERE tipo=? AND color=?", (tipo, color))
+    fila = c.fetchone()
+    if fila:
+        nueva_cantidad = fila[0] + int(cantidad)
+        c.execute("UPDATE telas SET cantidad=? WHERE tipo=? AND color=?", (nueva_cantidad, tipo, color))
+    else:
+        c.execute("INSERT INTO telas (tipo, color, cantidad) VALUES (?, ?, ?)", (tipo, color, int(cantidad)))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"✅ Ingresado {cantidad} de {tipo}_{color}")
 
-async def consulta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        tela, cantidad_pedida = context.args[0], int(context.args[1])
-        actual = obtener_stock(tela)
-        mensaje = f"📦 Stock actual de *{tela}*: {actual}\n"
-        mensaje += "✅ Hay suficiente stock." if actual >= cantidad_pedida else "❌ No hay suficiente stock."
-        await update.message.reply_text(mensaje, parse_mode="Markdown")
-    except:
-        await update.message.reply_text("❌ Formato incorrecto.\nUsá: `/consulta tela_color cantidad`", parse_mode="Markdown")
-
+# 📤 REGISTRO DE VENTA
 async def vendido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        tela, cantidad = context.args[0], int(context.args[1])
-        nuevo = actualizar_stock(tela, -cantidad)
-        await update.message.reply_text(f"🛒 Vendido: -{cantidad} de {tela} (Queda: {nuevo})")
-    except:
-        await update.message.reply_text("❌ Formato incorrecto.\nUsá: `/vendido tela_color cantidad`", parse_mode="Markdown")
+    if len(context.args) != 3:
+        await update.message.reply_text("❌ Tenés que escribir: /vendido tipo color cantidad")
+        return
+    tipo, color, cantidad = context.args
+    cantidad = int(cantidad)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT cantidad FROM telas WHERE tipo=? AND color=?", (tipo, color))
+    fila = c.fetchone()
+    if fila and fila[0] >= cantidad:
+        nueva_cantidad = fila[0] - cantidad
+        c.execute("UPDATE telas SET cantidad=? WHERE tipo=? AND color=?", (nueva_cantidad, tipo, color))
+        mensaje = f"🧾 Vendido {cantidad} de {tipo}_{color}"
+    else:
+        mensaje = "❌ No hay suficiente stock."
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(mensaje)
 
-async def stock_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Tenés que escribir el tipo.\nEjemplo: `/stock lino`", parse_mode="Markdown")
+# 📊 CONSULTA STOCK DE UN TIPO
+async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("❌ Tenés que escribir el tipo.\nEjemplo: /stock lino")
         return
     tipo = context.args[0]
-    resultados = stock_por_tipo(tipo)
-    if resultados:
-        mensaje = "\n".join([f"{tela}: {cant}" for tela, cant in resultados])
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT color, cantidad FROM telas WHERE tipo=?", (tipo,))
+    filas = c.fetchall()
+    conn.close()
+    if filas:
+        mensaje = f"📦 Stock de *{tipo}*:\n"
+        for color, cantidad in filas:
+            mensaje += f"- {tipo}_{color}: {cantidad}\n"
+        await update.message.reply_text(mensaje, parse_mode="Markdown")
     else:
-        mensaje = "⚠️ No se encontró stock relacionado."
-    await update.message.reply_text(f"📦 *Stock encontrado:*\n{mensaje}", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ No se encontró stock relacionado.")
 
-# Lanzar bot con polling (no cerrar loop manualmente)
-app_bot = ApplicationBuilder().token(TOKEN).build()
-app_bot.add_handler(CommandHandler("tela", tela))
-app_bot.add_handler(CallbackQueryHandler(botones_callback))
-app_bot.add_handler(CommandHandler("ingreso", ingreso))
-app_bot.add_handler(CommandHandler("consulta", consulta))
-app_bot.add_handler(CommandHandler("vendido", vendido))
-app_bot.add_handler(CommandHandler("stock", stock_tipo))
+# ⌨️ BOTONES DE MENÚ
+async def tela(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [
+            InlineKeyboardButton("📥 Ingreso", callback_data="ingreso"),
+            InlineKeyboardButton("📤 Vendido", callback_data="vendido"),
+        ],
+        [
+            InlineKeyboardButton("📊 Consulta", callback_data="consulta"),
+            InlineKeyboardButton("📦 Stock", callback_data="stock"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Seleccioná una opción:", reply_markup=reply_markup)
 
-print("✅ Bot corriendo desde Render Web Service con polling activo")
-app_bot.run_polling()
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    comando = query.data
+    ejemplo = {
+        "ingreso": "/ingreso lino blanco 10",
+        "vendido": "/vendido lino blanco 2",
+        "consulta": "/stock lino",
+        "stock": "/stock lino"
+    }
+    await query.edit_message_text(f"📌 Escribí el comando:\n```{ejemplo[comando]}```", parse_mode="Markdown")
+
+# 🤖 INICIO DEL BOT
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Hola, soy tu bot de stock de telas.")
+
+# 🚀 MAIN
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    TOKEN = os.environ["TELEGRAM_TOKEN"]
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ingreso", ingreso))
+    app.add_handler(CommandHandler("vendido", vendido))
+    app.add_handler(CommandHandler("stock", stock))
+    app.add_handler(CommandHandler("tela", tela))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print("✅ Bot corriendo 24/7 desde Render Web Service")
+    await app.run_polling()
+
+# ⏯️ Ejecutar
+if __name__ == "__main__":
+    try:
+        import uvloop
+        import asyncio
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass
+
+    import asyncio
+    asyncio.run(main())
+
