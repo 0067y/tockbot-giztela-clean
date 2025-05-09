@@ -142,13 +142,23 @@ async def main():
 
 # ⏯️ Ejecutar
 if __name__ == "__main__":
-    try:
-        import uvloop
-        import asyncio
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    except ImportError:
-        pass
+    from keep_alive import keep_alive
+    keep_alive()
+
+    import nest_asyncio
+    nest_asyncio.apply()
 
     import asyncio
-    asyncio.run(main())
 
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        if "cannot close a running event loop" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.create_task(main())
+            loop.run_forever()
+        else:
+            raise
